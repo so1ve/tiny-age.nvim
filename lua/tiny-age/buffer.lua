@@ -6,10 +6,7 @@ local Config = require("tiny-age.config")
 local Filesystem = require("tiny-age.filesystem")
 
 local M = {}
-
-local function notify(message, level)
-  vim.notify("tiny-age: " .. message, level or vim.log.levels.INFO)
-end
+local write_group = api.nvim_create_augroup("tiny-age.write", { clear = true })
 
 local function set_private_options(buf)
   vim.bo[buf].swapfile = false
@@ -17,39 +14,23 @@ local function set_private_options(buf)
   vim.bo[buf].fixendofline = false
 end
 
-local function group_name(buf)
-  return "tiny-age.buffer." .. buf
-end
-
-local function detach_write_command(buf)
-  pcall(api.nvim_del_augroup_by_name, group_name(buf))
-end
-
 local function write(buf, path)
-  path = Common.normalize_path(path ~= "" and path or Common.buffer_path(buf))
+  path = Common.normalize_path(path)
   local text = Common.lines_to_text(buf)
 
   if text:find("\0", 1, true) then
     error("tiny-age: binary content cannot be encrypted safely")
   end
 
-  local ciphertext, encrypt_error = Age.encrypt(text, vim.b[buf].tiny_age_armored)
-  if ciphertext == nil then
-    error("tiny-age: encryption failed\n" .. encrypt_error)
-  end
-
-  local ok, write_error = Filesystem.atomic_write(path, ciphertext)
-  if not ok then
-    error("tiny-age: could not write " .. path .. "\n" .. write_error)
-  end
-
+  local ciphertext = Age.encrypt(path, text, vim.b[buf].tiny_age_armored)
+  Filesystem.atomic_write(path, ciphertext)
   vim.bo[buf].modified = false
 end
 
 local function attach_write_command(buf)
-  local group = api.nvim_create_augroup(group_name(buf), { clear = true })
+  api.nvim_clear_autocmds({ group = write_group, buffer = buf })
   api.nvim_create_autocmd("BufWriteCmd", {
-    group = group,
+    group = write_group,
     buffer = buf,
     callback = function(event)
       write(buf, event.match)
@@ -58,7 +39,6 @@ local function attach_write_command(buf)
 end
 
 local function setup_buffer(buf, armored)
-  set_private_options(buf)
   vim.bo[buf].buftype = "acwrite"
   vim.b[buf].tiny_age_armored = armored
   attach_write_command(buf)
@@ -82,7 +62,7 @@ local function show_read_error(buf, path, message)
   }
   vim.list_extend(lines, vim.split(message, "\n", { plain = true }))
 
-  detach_write_command(buf)
+  api.nvim_clear_autocmds({ group = write_group, buffer = buf })
   vim.bo[buf].modifiable = true
   api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].buftype = "nowrite"
@@ -91,40 +71,39 @@ local function show_read_error(buf, path, message)
   vim.bo[buf].modified = false
 
   vim.schedule(function()
-    notify("could not decrypt " .. path .. "\n" .. message, vim.log.levels.ERROR)
+    vim.notify("tiny-age: could not decrypt " .. path .. "\n" .. message, vim.log.levels.ERROR)
   end)
 end
 
 local function new(buf, path)
-  path = Common.normalize_path(path)
+  set_private_options(buf)
   setup_buffer(buf, Config.options.new_file_armor)
   set_filetype(buf, path, { "" })
   vim.bo[buf].endofline = true
 end
 
 local function read(buf, path)
-  path = Common.normalize_path(path)
   set_private_options(buf)
 
-  if vim.fn.filereadable(path) == 0 then
-    new(buf, path)
+  local ok, plaintext, armored = pcall(function()
+    local armored = Filesystem.is_armored(path)
+    if armored == nil then
+      return nil
+    end
+    local plaintext = Age.decrypt(path)
+    if plaintext:find("\0", 1, true) then
+      error("decrypted content is binary and cannot be edited safely")
+    end
+    return plaintext, armored
+  end)
+
+  if not ok then
+    show_read_error(buf, path, plaintext)
     return
   end
 
-  local armored, header_error = Filesystem.read_header(path)
-  if armored == nil then
-    show_read_error(buf, path, header_error)
-    return
-  end
-
-  local plaintext, decrypt_error = Age.decrypt(path)
   if plaintext == nil then
-    show_read_error(buf, path, decrypt_error)
-    return
-  end
-
-  if plaintext:find("\0", 1, true) then
-    show_read_error(buf, path, "decrypted content is binary and cannot be edited safely")
+    new(buf, path)
     return
   end
 
@@ -140,13 +119,9 @@ end
 
 function M.open(path)
   path = Common.normalize_path(path)
-  if vim.fn.filereadable(path) == 0 then
-    error("tiny-age: cannot read " .. path)
-  end
-
   local buf = vim.fn.bufadd(path)
-  api.nvim_set_current_buf(buf)
   read(buf, path)
+  api.nvim_set_current_buf(buf)
 end
 
 function M.setup()
@@ -162,7 +137,7 @@ function M.setup()
       group = group,
       pattern = patterns,
       callback = function(event)
-        read(event.buf, Common.buffer_path(event.buf))
+        read(event.buf, api.nvim_buf_get_name(event.buf))
       end,
     })
 
@@ -170,7 +145,7 @@ function M.setup()
       group = group,
       pattern = patterns,
       callback = function(event)
-        new(event.buf, Common.buffer_path(event.buf))
+        new(event.buf, api.nvim_buf_get_name(event.buf))
       end,
     })
   end

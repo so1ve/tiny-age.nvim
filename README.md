@@ -19,6 +19,8 @@ open an age file, edit it, and `:write` it safely.
 - Neovim 0.10+ (0.13+ when installing with `vim.pack`)
 - `age`
 
+Editing agenix secrets also requires `nix-instantiate` (included with Nix).
+
 Passphrase-encrypted age files are not supported because there is no safe,
 non-interactive way to choose the recipient used when saving.
 
@@ -31,7 +33,7 @@ non-interactive way to choose the recipient used when saving.
   "so1ve/tiny-age.nvim",
   opts = {
     identities = { vim.fn.expand("~/.config/agenix/identity") },
-    encrypt_to_identity = true,
+    recipients = { "age1..." },
   },
 }
 ```
@@ -45,7 +47,7 @@ vim.pack.add({
 
 require("tiny-age").setup({
   identities = { vim.fn.expand("~/.config/agenix/identity") },
-  encrypt_to_identity = true,
+  recipients = { "age1..." },
 })
 ```
 
@@ -91,8 +93,6 @@ require("tiny-age").setup({
   suffixes = { ".age" },
   identities = {},
   recipients = {},
-  recipient_files = {},
-  encrypt_to_identity = false,
   new_file_armor = true,
 })
 ```
@@ -102,17 +102,44 @@ require("tiny-age").setup({
 | `age` | `"age"` | Path to the age executable. |
 | `suffixes` | `{ ".age" }` | File suffixes handled automatically. |
 | `identities` | `{}` | Identity files passed to every decryption. |
-| `recipients` | `{}` | Public recipients used when encrypting. |
-| `recipient_files` | `{}` | Recipient files passed with `--recipients-file`. |
-| `encrypt_to_identity` | `false` | Use configured identities as recipients when no explicit recipient is set. |
+| `recipients` | `{}` | Complete list of public recipients, or a function receiving the absolute target path and returning that list. |
 | `new_file_armor` | `true` | Write new files in ASCII-armored format. |
 
 Existing files keep their current format: binary files stay binary and armored files
 stay armored.
 
-For an age file that must remain readable by several keys, configure every recipient
-or a recipient file. `encrypt_to_identity` only writes to recipients represented by
-the configured identity files.
+### agenix
+
+Pass the rules file explicitly:
+
+```lua
+require("tiny-age").setup({
+  identities = { vim.fn.expand("~/.config/agenix/identity") },
+  recipients = require("tiny-age.agenix").from_file("~/nixos/secrets/secrets.nix"),
+})
+```
+
+`from_file(path)` returns a recipient function. On each save, it evaluates the
+target file's `publicKeys` using `nix-instantiate`. Secret names are relative to
+the rules file's directory; the target must be inside that directory. For example:
+
+```nix
+{
+  "homelab/some-secret".publicKeys = [ user homelab ];
+}
+```
+
+The matching list supplies all encryption recipients for existing and new files.
+Rules are evaluated without building derivations. Missing files or entries,
+invalid or empty key lists, evaluation errors, and a missing `nix-instantiate`
+abort the write and leave the original ciphertext untouched.
+
+### Recipient policy
+
+Saving always requires the complete recipient list. Identities are used only for
+decryption. The original recipient list cannot generally be recovered from age
+ciphertext, so include every key that needs access in the configured list or the
+function's result. `suffixes` and `identities` are lists.
 
 ## Safety model
 
@@ -125,6 +152,8 @@ the configured identity files.
 - Files containing NUL bytes after decryption are opened read-only.
 
 ## Tests
+
+The integration tests require Neovim, `age`, `age-keygen`, and `nix-instantiate`.
 
 ```sh
 AGE_BIN="$(command -v age)" nvim --headless -u NONE -i NONE -l tests/tiny-age.lua

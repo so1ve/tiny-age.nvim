@@ -4,18 +4,9 @@ function M.normalize_path(path)
   return vim.fs.normalize(vim.fn.fnamemodify(vim.fn.expand(path), ":p"))
 end
 
-function M.buffer_path(buf)
-  local name = vim.api.nvim_buf_get_name(buf)
-  if name == "" then
-    return
-  end
-
-  return M.normalize_path(name)
-end
-
 function M.decrypted_name(path, suffixes)
   for _, suffix in ipairs(suffixes) do
-    if suffix ~= "" and path:sub(-#suffix) == suffix then
+    if path:sub(-#suffix) == suffix then
       return path:sub(1, -#suffix - 1)
     end
   end
@@ -35,7 +26,7 @@ function M.text_to_lines(text)
     table.remove(lines)
   end
 
-  return #lines > 0 and lines or { "" }, endofline
+  return lines, endofline
 end
 
 function M.lines_to_text(buf)
