@@ -209,6 +209,22 @@ assert(
   "each file is encrypted only to the recipients in its rule"
 )
 
+local sibling_dir = vim.fs.joinpath(root, "modules/hosts/vesper/secrets")
+vim.fn.mkdir(sibling_dir, "p")
+local sibling_path = vim.fs.joinpath(sibling_dir, "host-secret.age")
+create_encrypted(sibling_path, { recipient, host_recipient }, "HOST=before\n", true)
+assert(vim.fn.writefile({
+  ("let user = %q; host = %q; in {"):format(recipient, host_recipient),
+  '  "../modules/hosts/vesper/secrets/host-secret.age".publicKeys = [ user host ];',
+  "}",
+}, rules_path) == 0)
+vim.cmd.edit(vim.fn.fnameescape(sibling_path))
+buf = vim.api.nvim_get_current_buf()
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "HOST=after" })
+vim.cmd.write()
+assert_equal(decrypt(sibling_path, identity_path), "HOST=after\n", "relative ../ rules keep the user's access")
+assert_equal(decrypt(sibling_path, host_identity), "HOST=after\n", "relative ../ rules keep the host's access")
+
 vim.cmd.edit(vim.fn.fnameescape(shared_path))
 buf = vim.api.nvim_get_current_buf()
 vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "must survive invalid rules" })

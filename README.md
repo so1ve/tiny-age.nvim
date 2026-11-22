@@ -121,7 +121,7 @@ require("tiny-age").setup({
 
 `from_file(path)` returns a recipient function. On each save, it evaluates the
 target file's `publicKeys` using `nix-instantiate`. Secret names are relative to
-the rules file's directory; the target must be inside that directory. For example:
+the rules file's directory (including `../` paths for targets outside it). For example:
 
 ```nix
 {
