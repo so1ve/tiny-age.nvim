@@ -358,5 +358,113 @@ assert(not pcall(vim.cmd.write), "encryption failure aborts the write")
 assert_equal(read_file(encrypted_path), before_failure, "encryption failure does not replace the file")
 assert_equal(vim.bo[buf].modified, true, "failed writes leave the buffer modified")
 
+TinyAge.setup({
+  age = age_bin,
+  identities = { identity_path },
+  recipients = { recipient },
+})
+
+local reload_path = vim.fs.joinpath(root, "reload.yaml.age")
+create_encrypted(reload_path, { recipient }, "line: 1\nline: 2\n", true)
+vim.cmd.edit(vim.fn.fnameescape(reload_path))
+local reload_buf = vim.api.nvim_get_current_buf()
+assert_equal(vim.api.nvim_buf_get_lines(reload_buf, 0, -1, false), { "line: 1", "line: 2" }, "initial reload fixture")
+
+vim.cmd.enew()
+create_encrypted(reload_path, { recipient }, "updated: 1\nupdated: 2\nupdated: 3\n", true)
+vim.cmd("silent! edit " .. vim.fn.fnameescape(reload_path) .. " | 2")
+assert_equal(vim.api.nvim_get_current_buf(), reload_buf, "reuses the existing buffer")
+assert_equal(
+  vim.api.nvim_buf_get_lines(reload_buf, 0, -1, false),
+  { "updated: 1", "updated: 2", "updated: 3" },
+  "hidden buffer reloads on BufEnter after external change"
+)
+assert_equal(vim.bo[reload_buf].modified, false, "reloaded buffer stays unmodified")
+assert_equal(vim.api.nvim_win_get_cursor(0)[1], 2, "edit command line jump lands on the reloaded buffer")
+
+create_encrypted(reload_path, { recipient }, "focus: 1\nfocus: 2\nfocus: 3\n", true)
+vim.api.nvim_exec_autocmds("FocusGained", {})
+assert_equal(
+  vim.api.nvim_buf_get_lines(reload_buf, 0, -1, false),
+  { "focus: 1", "focus: 2", "focus: 3" },
+  "visible buffer reloads on FocusGained after external change"
+)
+assert_equal(vim.api.nvim_win_get_cursor(0)[1], 2, "FocusGained reload preserves cursor line")
+
+vim.api.nvim_buf_set_lines(reload_buf, 0, -1, false, { "unsaved: true" })
+vim.cmd.enew()
+create_encrypted(reload_path, { recipient }, "disk: version\n", true)
+notifications = {}
+notify = vim.notify
+vim.notify = function(message, level)
+  table.insert(notifications, { message = message, level = level })
+end
+vim.cmd("silent! edit " .. vim.fn.fnameescape(reload_path))
+assert(vim.wait(100, function()
+  return #notifications == 1
+end), "external change on modified buffer emits a warning")
+assert_equal(notifications[1].level, vim.log.levels.WARN, "conflict notice is a warning")
+assert_equal(vim.api.nvim_buf_get_lines(reload_buf, 0, -1, false), { "unsaved: true" }, "unsaved changes are preserved")
+assert_equal(vim.bo[reload_buf].modified, true, "modified buffer stays modified")
+
+vim.cmd.enew()
+vim.cmd("silent! edit " .. vim.fn.fnameescape(reload_path))
+vim.wait(50, function()
+  return #notifications > 1
+end)
+assert_equal(#notifications, 1, "unchanged conflict is not reported repeatedly")
+vim.notify = notify
+
+vim.cmd("edit!")
+assert_equal(vim.api.nvim_buf_get_lines(reload_buf, 0, -1, false), { "disk: version" }, "edit! reloads disk content")
+assert_equal(vim.bo[reload_buf].modified, false, "edit! clears modified flag")
+
+vim.api.nvim_buf_set_lines(reload_buf, 0, -1, false, { "saved: locally" })
+vim.cmd.write()
+vim.cmd.enew()
+TinyAge.setup({
+  age = vim.fs.joinpath(root, "missing-age"),
+  identities = { identity_path },
+  recipients = { recipient },
+})
+vim.cmd("silent! edit " .. vim.fn.fnameescape(reload_path))
+assert_equal(
+  vim.api.nvim_buf_get_lines(reload_buf, 0, -1, false),
+  { "saved: locally" },
+  "saving updates recorded stat so re-entering does not re-decrypt"
+)
+assert_equal(vim.bo[reload_buf].buftype, "acwrite", "buffer stays writable when stat matches")
+
+TinyAge.setup({
+  age = age_bin,
+  identities = { identity_path },
+  recipients = { recipient },
+})
+
+vim.cmd("silent! edit " .. vim.fn.fnameescape(invalid_path))
+local invalid_buf = vim.api.nvim_get_current_buf()
+assert_equal(vim.bo[invalid_buf].buftype, "nowrite", "invalid buffer starts nowrite")
+vim.cmd.enew()
+create_encrypted(invalid_path, { recipient }, "recovered: true\n", true)
+vim.cmd("silent! edit " .. vim.fn.fnameescape(invalid_path))
+assert_equal(
+  vim.api.nvim_buf_get_lines(invalid_buf, 0, -1, false),
+  { "recovered: true" },
+  "fixed file recovers on BufEnter"
+)
+assert_equal(vim.bo[invalid_buf].buftype, "acwrite", "recovered buffer becomes acwrite")
+assert_equal(vim.bo[invalid_buf].modifiable, true, "recovered buffer becomes modifiable")
+
+vim.cmd("AgeEdit " .. vim.fn.fnameescape(custom_path))
+local custom_buf = vim.api.nvim_get_current_buf()
+vim.cmd.enew()
+create_encrypted(custom_path, { recipient }, "custom updated\n", false)
+vim.cmd("silent! edit " .. vim.fn.fnameescape(custom_path))
+assert_equal(
+  vim.api.nvim_buf_get_lines(custom_buf, 0, -1, false),
+  { "custom updated" },
+  "AgeEdit buffer reloads on BufEnter after external change"
+)
+
 vim.fn.delete(root, "rf")
 vim.api.nvim_out_write("tiny-age tests passed\n")

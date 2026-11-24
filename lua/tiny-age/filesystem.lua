@@ -3,6 +3,24 @@ local bit = require("bit")
 
 local M = {}
 
+function M.stat(path)
+  local stat, stat_error, stat_code = uv.fs_stat(path)
+  if not stat then
+    if stat_code == "ENOENT" then
+      return nil
+    end
+    error(stat_error)
+  end
+
+  return {
+    dev = stat.dev,
+    ino = stat.ino,
+    size = stat.size,
+    mtime_sec = stat.mtime.sec,
+    mtime_nsec = stat.mtime.nsec,
+  }
+end
+
 function M.is_armored(path)
   local marker = "-----BEGIN AGE ENCRYPTED FILE-----"
   local fd, open_error, open_code = uv.fs_open(path, "r", 0)
